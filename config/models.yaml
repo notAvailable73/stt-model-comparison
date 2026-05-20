@@ -19,6 +19,9 @@ models:
     family: nemo_conformer
     # Hybrid model — defaults to RNN-T, may auto-switch to CTC (see DECISIONS.md §B)
     decoder: rnnt
+    # AI4Bharat's transcribe() requires language_id; hishab models reject it.
+    # The adapter passes this only when set.
+    language_id: bn
 
   - id: hishab/titu_stt_bn_fastconformer
     family: nemo_conformer

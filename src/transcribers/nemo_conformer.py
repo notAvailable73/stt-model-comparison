@@ -33,6 +33,7 @@ class NemoConformerTranscriber(BaseTranscriber):
         model_id: str,
         device: str = "cuda",
         decoder: str | None = None,
+        language_id: str | None = None,
     ) -> None:
         super().__init__(model_id=model_id, device=device)
 
@@ -46,13 +47,19 @@ class NemoConformerTranscriber(BaseTranscriber):
         target_device = "cuda" if use_cuda else "cpu"
         if device.startswith("cuda") and not use_cuda:
             logger.warning("CUDA requested but unavailable — running %s on CPU", model_id)
+        # freeze() sets requires_grad=False on every param AND calls eval(),
+        # which is the right pattern for inference (matches AI4Bharat's docs).
+        self.asr.freeze()
         self.asr = self.asr.to(target_device)
-        self.asr.eval()
 
         self.is_hybrid: bool = decoder is not None
         self.current_decoder: str | None = decoder
         if self.is_hybrid:
             self._set_decoder(decoder)  # type: ignore[arg-type]
+
+        # language_id is set in models.yaml only for AI4Bharat models. Stock
+        # hishab models reject this kwarg, so we pass it only when set.
+        self._language_id: str | None = language_id
 
         # Auto-switch bookkeeping (only meaningful when is_hybrid is True).
         self._auto_switch_done: bool = not self.is_hybrid
@@ -69,8 +76,18 @@ class NemoConformerTranscriber(BaseTranscriber):
 
     def _run(self, audio_path: str) -> str:
         """Run inference on one file and return the decoded string."""
+        kwargs: dict = {}
+        # AI4Bharat indicconformer requires language_id; passing it to stock
+        # hishab models would error, so we only set kwargs when configured.
+        if self._language_id:
+            kwargs["language_id"] = self._language_id
+            kwargs["batch_size"] = 1
+            # The hybrid CTC head expects logprobs=False to get plain text out.
+            if self.is_hybrid and self.current_decoder == "ctc":
+                kwargs["logprobs"] = False
+
         with torch.inference_mode():
-            output = self.asr.transcribe([audio_path], verbose=False)
+            output = self.asr.transcribe([audio_path], **kwargs)
         # NeMo's transcribe() shape varies by version: List[str], List[Hypothesis],
         # or sometimes a tuple (best_hyps, all_hyps). Normalize.
         if isinstance(output, tuple) and output:

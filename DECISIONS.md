@@ -23,6 +23,24 @@ does the code do X." The plan is the spec; this file is the addendum.
 - The chosen decoder for each clip is recorded in `predictions/<slug>.csv`
   under a `decoder_variant` column. The column is null for all other models.
 
+### Why AI4Bharat's NeMo fork (not stock nemo_toolkit)
+
+- Stock `nemo_toolkit[asr]` doesn't ship the multi-softmax aggregate
+  tokenizer or the `language_id` transcribe kwarg that the indicconformer
+  model requires. Loading the model against stock NeMo fails at the
+  tokenizer-setup stage.
+- Reference: AI4Bharat publishes the patched fork at
+  `https://github.com/AI4Bharat/NeMo` on the `nemo-v2` branch. Their
+  `reinstall.sh` installs it in editable mode under the same
+  `nemo_toolkit` package name, so the hishab Conformer models (5 and 6)
+  also load on top without any extra install.
+- Cell 1 of the notebook runs `git clone + bash reinstall.sh` for this
+  fork. This adds ~5–10 min to first-time setup, cached thereafter.
+- The adapter passes `language_id="bn"` and (when in CTC mode for the
+  hybrid model) `logprobs=False` for AI4Bharat models only. Hishab models
+  reject these kwargs, so the adapter sends them only when `language_id`
+  is set in `config/models.yaml`.
+
 ## C. Chirp 3 via OpenRouter (model 9)
 
 - Use the `openai` Python SDK pointed at `https://openrouter.ai/api/v1`.
@@ -38,6 +56,19 @@ does the code do X." The plan is the spec; this file is the addendum.
 - If the repo doesn't resolve or the `omnilingual-asr` package can't load it,
   the model is marked `FAILED`. That's the correct behavior — the plan locks
   the model list.
+
+### Realized failure on the first Colab run (2026-05-21)
+
+- `omnilingual-asr` installs cleanly, but its dep `fairseq2n` ships only a
+  CUDA-13 wheel: `libcudart.so.13: cannot open shared object file`.
+- Colab provides CUDA 12.8. There is no `fairseq2n` wheel built for
+  CUDA 12 at the version pinned by omnilingual-asr, and we are not
+  pinning model versions ourselves (the plan locks model IDs, not their
+  dep tree).
+- Per the failure policy this run reports model 7 as FAILED in
+  `metadata.models_failed`. The remaining 8 models still run.
+- A future runtime with CUDA 13 (or a fairseq2n CUDA-12 wheel published
+  upstream) would let this model run without any code change.
 
 ## E. Resumability granularity
 
