@@ -1,0 +1,38 @@
+# Locked list of 9 models. DO NOT add, remove, or substitute models.
+# `family` determines which adapter in src/transcribers/ is used.
+# Extra per-model keys (lang, decoder, ...) are passed as kwargs to the adapter.
+
+models:
+  - id: openai/whisper-large-v3
+    family: whisper_hf
+    language: bn
+
+  - id: openai/whisper-large-v3-turbo
+    family: whisper_hf
+    language: bn
+
+  - id: KhushiDS/whisper-large-v3-Bengali
+    family: whisper_hf
+    language: bn
+
+  - id: ai4bharat/indicconformer_stt_bn_hybrid_ctc_rnnt_large
+    family: nemo_conformer
+    # Hybrid model — defaults to RNN-T, may auto-switch to CTC (see DECISIONS.md §B)
+    decoder: rnnt
+
+  - id: hishab/titu_stt_bn_fastconformer
+    family: nemo_conformer
+
+  - id: hishab/titu_stt_bn_conformer_large
+    family: nemo_conformer
+
+  - id: facebook/omniASR-CTC-300M
+    family: omni_asr
+    lang: ben_Beng
+
+  - id: bangla-speech-processing/BanglaASR
+    family: whisper_hf
+    language: bn
+
+  - id: google/chirp-3
+    family: openrouter_stt

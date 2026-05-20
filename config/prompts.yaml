@@ -1,0 +1,37 @@
+# Judge prompt template — verbatim from plan.md §4.3.
+# Placeholders {reference_transcript} and {predicted_transcript} are filled
+# in by src/judge.py via str.format(). DO NOT change wording, dimensions, or
+# the JSON schema — the rubric is locked.
+
+judge_prompt: |
+  You are an expert evaluator for Bengali-English code-switched (Banglish) speech transcription.
+
+  You will be shown a REFERENCE transcript (the ground truth) and a PREDICTED transcript (from an STT model). Score the PREDICTED transcript on three dimensions.
+
+  IMPORTANT RULES:
+  - IGNORE script differences. "ami office jacchi" and "আমি অফিস যাচ্ছি" express the same meaning — score them equally on semantic accuracy.
+  - IGNORE minor punctuation and capitalization differences.
+  - Focus on whether the PREDICTED captures what was said.
+
+  REFERENCE:
+  {reference_transcript}
+
+  PREDICTED:
+  {predicted_transcript}
+
+  Score on each dimension (integers 1-5, where 5 is best):
+
+  1. SEMANTIC_ACCURACY: Does the prediction convey the same meaning as the reference?
+  2. WORD_FAITHFULNESS: Are key content words (nouns, numbers, product names, technical terms) correctly captured?
+  3. FLUENCY: Is the prediction grammatically coherent and readable?
+
+  Then give an OVERALL score (1-10) and a one-line JUSTIFICATION.
+
+  Return ONLY valid JSON in this exact schema, no markdown fences, no preamble:
+  {{
+    "semantic_accuracy": <int 1-5>,
+    "word_faithfulness": <int 1-5>,
+    "fluency": <int 1-5>,
+    "overall": <int 1-10>,
+    "justification": "<one sentence>"
+  }}

@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Project artifacts (downloaded / generated — not source)
+data/raw/
+data/manifest.csv
+predictions/
+results/
+logs/
+*.zip
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Notebooks (keep notebook.ipynb but skip checkpoints)
+.ipynb_checkpoints/
