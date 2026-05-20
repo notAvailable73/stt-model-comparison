@@ -1,3 +1,9 @@
+# NOTE: Do NOT `pip install -r requirements.txt` in one shot on Colab.
+# NeMo and omnilingual-asr have ResolutionImpossible together. The notebook's
+# Cell 1 installs them in separate `pip install` calls so each gets its own
+# resolution. This file remains the single-source list (per plan §5.3) for
+# local dev / reference.
+
 torch>=2.1
 torchaudio
 transformers>=4.45
