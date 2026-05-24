@@ -13,10 +13,21 @@ for non-obvious defaults.
 .
 ├── plan.md                     # Spec (locked)
 ├── DECISIONS.md                # Defaults / judgment calls not in the spec
-├── requirements.txt            # Colab pip install
-├── notebook.ipynb              # Entry point — clones repo, runs cells 1–10
+├── requirements.txt
+├── notebooks/                  # Kaggle entry points — one per model + judge
+│   ├── 1_whisper_large_v3.ipynb
+│   ├── 2_whisper_large_v3_turbo.ipynb
+│   ├── 3_whisper_large_v3_bengali.ipynb
+│   ├── 4_indicconformer_bn.ipynb           # NeMo, Python 3.11
+│   ├── 5_titu_fastconformer.ipynb          # NeMo, Python 3.11
+│   ├── 6_titu_conformer_large.ipynb        # NeMo, Python 3.11
+│   ├── 7_omni_asr.ipynb                    # expected FAIL (DECISIONS.md §D)
+│   ├── 8_bangla_asr.ipynb
+│   ├── 9_chirp_3.ipynb                     # OpenRouter
+│   └── 10_judge_and_analyze.ipynb          # consumes uploaded CSVs
 ├── src/
 │   ├── data_prep.py            # Download OpenSLR-104, sample 50, build manifest
+│   ├── transcribe.py           # run_single_model / run_transcription
 │   ├── judge.py                # Gemini 3 Flash via OpenRouter
 │   ├── analyze.py              # Aggregation + 6 plots
 │   ├── utils.py                # Logging, JSON/YAML I/O, slugify
@@ -30,17 +41,41 @@ for non-obvious defaults.
 │   ├── models.yaml             # Locked list of 9 models
 │   └── prompts.yaml            # Judge prompt template
 └── scripts/
+    ├── build_notebooks.py      # Regenerate notebooks/ from this single source
     └── smoke_whisper.py        # One-clip sanity check for whisper_hf adapter
 ```
 
-## Run it (Colab)
+## Run it (Kaggle)
 
-1. Fork this repo.
-2. Open `notebook.ipynb` in Colab.
-3. Set `GITHUB_REPO_URL` in Cell 1 to your fork's clone URL.
-4. Run cells 1–10. Cell 10 produces the downloadable zip.
+The single-notebook approach doesn't work on Kaggle — the 9 models' Python
+dependencies cannot share an environment. See [DECISIONS.md §I](DECISIONS.md)
+for the full diagnosis. The new workflow is one Kaggle notebook per model.
 
-The notebook is intentionally thin — almost all logic lives in `src/`.
+1. Fork this repo and set the `GITHUB_REPO_URL` constant at the top of
+   `scripts/build_notebooks.py` to your fork's clone URL, then re-run
+   `python scripts/build_notebooks.py`. Commit and push.
+2. For each `notebooks/N_*.ipynb`:
+   - Create a new Kaggle notebook (File → Upload notebook, or paste cells).
+   - **For notebooks 4, 5, 6 (NeMo):** Settings → Environment → "Pin to
+     original environment" (Python 3.11). For everything else, Kaggle's
+     current default is fine.
+   - For notebooks 9 and 10: add `OPENROUTER_API_KEY` under Add-ons → Secrets.
+   - Run all cells. Download the predictions CSV at the end (a `FileLink`
+     appears in the last cell's output).
+3. Run notebook 10 (`10_judge_and_analyze.ipynb`) last:
+   - Upload all 9 CSVs as a Kaggle dataset (right sidebar → + Add Data →
+     Upload).
+   - Set `UPLOADED_DIR` in the aggregation cell to that dataset's path.
+   - Run all cells. The final cell produces a downloadable zip.
+
+The notebooks are intentionally thin — almost all logic lives in `src/`,
+and the install cells are model-family-specific (see DECISIONS.md §I for
+the NeMo recipe in particular).
+
+### Don't hand-edit the .ipynb files
+
+`scripts/build_notebooks.py` is the source of truth. Edit there, re-run,
+commit the regenerated notebooks.
 
 ## Local smoke test (one model, one clip)
 

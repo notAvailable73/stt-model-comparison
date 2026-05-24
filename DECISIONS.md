@@ -97,3 +97,72 @@ does the code do X." The plan is the spec; this file is the addendum.
 - The defaults above (sampling spillover, decoder auto-switch, etc.) are
   judgment calls that aren't visible in the code without context. This file
   is the context.
+
+## I. Per-model Kaggle notebooks (replaces single Colab notebook)
+
+`plan.md` §6 specifies one Colab notebook that runs every model. On Kaggle
+this turns out to be unworkable — the 9 models' dep trees do not share a
+solvable Python environment. We split into one notebook per model under
+`notebooks/`, each owning its install profile, all writing the same
+`predictions/<slug>.csv` schema. A separate `notebooks/10_judge_and_analyze.ipynb`
+consumes the 9 CSVs (uploaded by the user) and runs the existing judge +
+analysis pipeline unchanged.
+
+### Why the single-notebook approach failed
+
+- **NeMo fork pins `huggingface_hub==0.23.2`**, but stock Kaggle
+  `transformers>=5`, `datasets>=4.x`, `diffusers>=0.34`, and `openai>=2.x`
+  all require `hf_hub>=0.25` or `>=1.5`. Impossible to satisfy together.
+- **Pip's new resolver thrashes** on the conflict — observed >1h
+  backtracking through every published version of `transformers` and
+  `datasets`.
+- **`tensorstore<0.1.46`** (NeMo's pin) has no cp312 wheel. Falls back to
+  a Bazel source build that takes 30–60+ min on Kaggle CPU.
+- **Editable install race.** `pip install -e` writes a `.pth` file that
+  Python reads only at interpreter startup. Kaggle's "Restart & Clear"
+  resets the kernel before the new `.pth` is picked up → `import nemo`
+  fails even though `pip show nemo_toolkit` reports it installed.
+
+### NeMo notebook install recipe (notebooks 4, 5, 6)
+
+- **Python 3.11**, not 3.12. Kaggle: Settings → Environment → "Pin to
+  original environment", or pick a 3.11 image. Most cp312 wheel gaps
+  vanish on 3.11.
+- Pre-uninstall `transformers / datasets / diffusers / huggingface_hub
+  / tokenizers` before installing NeMo (removes the resolver's
+  conflict seeds).
+- `pip install "pip<24.2"` (faster legacy resolver available).
+- Patch `tensorstore<0.1.46` → unconstrained, pre-install
+  `tensorstore>=0.1.71`.
+- Run `PIP_USE_DEPRECATED=legacy-resolver bash reinstall.sh`.
+- Then `sys.path.append("/kaggle/working/NeMo")` in the kernel that
+  needs to import nemo — survives the kernel-restart race above.
+
+The recipe is baked into the Cell 3 of every NeMo notebook; the
+generator at `scripts/build_notebooks.py` is the source of truth.
+
+### Manifest sharing across notebooks
+
+Each notebook calls `build_manifest(seed=42)` independently.
+`src/data_prep.py` produces an identical clip set given the same source
+archive, so all 10 notebooks see the same 50 clips with the same
+`clip_id`s — no manual dataset upload step for the manifest. The cost is
+that each notebook downloads OpenSLR-104 (606 MB) on first run.
+
+### Predictions flow
+
+Each model notebook ends with an `IPython.display.FileLink` to its
+`predictions/<slug>.csv`. The user downloads all 9 locally, then uploads
+them as a Kaggle dataset attached to notebook 10. Notebook 10 aggregates
+them into its local `predictions/` and runs `judge_predictions` +
+`build_master_json` + `build_comparison_table` + `make_all_plots` +
+`write_report_md` + `bundle_results` (all unchanged from §6).
+
+### Why `run_single_model` was extracted
+
+`src/transcribe.py` previously only exposed `run_transcription`, which
+loops over every model in `config/models.yaml`. Per-model notebooks need
+to run exactly one model from the same config. The inner per-model loop
+was extracted into a public `run_single_model(spec, ...)` and
+`run_transcription` is now a thin wrapper that calls it for each spec.
+No behaviour change for callers of `run_transcription`.

@@ -20,3 +20,5 @@ logs/
 
 # Notebooks (keep notebook.ipynb but skip checkpoints)
 .ipynb_checkpoints/
+
+.claude

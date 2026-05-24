@@ -59,83 +59,96 @@ def _append_prediction(csv_path: Path, row: dict, write_header: bool) -> None:
         writer.writerow({k: row.get(k, "") for k in PREDICTION_COLUMNS})
 
 
+def run_single_model(
+    spec: dict,
+    manifest_csv: str | Path,
+    predictions_dir: str | Path = "predictions",
+    device: str = "cuda",
+) -> dict | None:
+    """Run one model over the manifest. Returns failure dict or None on success.
+
+    `spec` is one entry from config/models.yaml["models"]: requires "id" and
+    "family"; any extra keys are forwarded to the adapter as kwargs.
+    """
+    model_id: str = spec["id"]
+    family: str = spec["family"]
+    adapter_kwargs = {k: v for k, v in spec.items() if k not in ("id", "family")}
+
+    manifest = pd.read_csv(manifest_csv)
+    predictions_dir = Path(predictions_dir)
+    predictions_dir.mkdir(parents=True, exist_ok=True)
+
+    slug = slugify_model_id(model_id)
+    out_csv = predictions_dir / f"{slug}.csv"
+    already_done = _existing_clip_ids(out_csv)
+    write_header = not out_csv.exists() or out_csv.stat().st_size == 0
+    logger.info(
+        "=== Model %s (family=%s) — %d clips already in %s ===",
+        model_id, family, len(already_done), out_csv,
+    )
+
+    try:
+        AdapterCls = _load_adapter_class(family)
+        transcriber = AdapterCls(model_id=model_id, device=device, **adapter_kwargs)
+    except Exception as e:  # noqa: BLE001 — load can fail many ways; we always log.
+        logger.exception("Model %s FAILED during load", model_id)
+        return {"model_id": model_id, "status": "FAILED", "error": f"load: {e!r}"}
+
+    try:
+        for _, row in manifest.iterrows():
+            clip_id = str(row["clip_id"])
+            if clip_id in already_done:
+                continue
+            audio_path = str(row["audio_path"])
+
+            try:
+                text, latency = transcriber.transcribe(audio_path)
+            except Exception as e:  # noqa: BLE001 — log and continue with NaN.
+                logger.exception("clip=%s model=%s transcribe failed", clip_id, model_id)
+                text, latency = "", float("nan")
+
+            _append_prediction(
+                out_csv,
+                {
+                    "clip_id": clip_id,
+                    "model_id": model_id,
+                    "predicted_text": text,
+                    "latency_sec": latency,
+                    "decoder_variant": getattr(transcriber, "current_decoder", None) or "",
+                },
+                write_header=write_header,
+            )
+            write_header = False
+            already_done.add(clip_id)
+            logger.info(
+                "  %s | clip=%s | latency=%.2fs | %s",
+                model_id, clip_id, latency if latency == latency else float("nan"),
+                (text[:60] + "…") if len(text) > 60 else text,
+            )
+    finally:
+        try:
+            transcriber.cleanup()
+        except Exception:  # noqa: BLE001
+            logger.exception("Cleanup failed for %s", model_id)
+
+    return None
+
+
 def run_transcription(
     manifest_csv: str | Path,
     models_yaml: str | Path,
     predictions_dir: str | Path = "predictions",
     device: str = "cuda",
 ) -> list[dict]:
-    """Run all 9 models. Returns the list of failed-model records.
+    """Run all models in models.yaml. Returns the list of failed-model records.
 
     Each failed entry: {"model_id": str, "status": "FAILED", "error": str}.
     """
-    manifest = pd.read_csv(manifest_csv)
-    models_cfg = read_yaml(models_yaml)
-    predictions_dir = Path(predictions_dir)
-    predictions_dir.mkdir(parents=True, exist_ok=True)
-
     failed: list[dict] = []
-    for spec in models_cfg["models"]:
-        model_id: str = spec["id"]
-        family: str = spec["family"]
-        # Anything other than id/family is passed as adapter kwargs.
-        adapter_kwargs = {k: v for k, v in spec.items() if k not in ("id", "family")}
-
-        slug = slugify_model_id(model_id)
-        out_csv = predictions_dir / f"{slug}.csv"
-        already_done = _existing_clip_ids(out_csv)
-        write_header = not out_csv.exists() or out_csv.stat().st_size == 0
-        logger.info(
-            "=== Model %s (family=%s) — %d clips already in %s ===",
-            model_id, family, len(already_done), out_csv,
-        )
-
-        # --- Load ---
-        try:
-            AdapterCls = _load_adapter_class(family)
-            transcriber = AdapterCls(model_id=model_id, device=device, **adapter_kwargs)
-        except Exception as e:  # noqa: BLE001 — load can fail many ways; we always log.
-            logger.exception("Model %s FAILED during load", model_id)
-            failed.append({"model_id": model_id, "status": "FAILED", "error": f"load: {e!r}"})
-            continue
-
-        # --- Per-clip loop ---
-        try:
-            for _, row in manifest.iterrows():
-                clip_id = str(row["clip_id"])
-                if clip_id in already_done:
-                    continue
-                audio_path = str(row["audio_path"])
-
-                try:
-                    text, latency = transcriber.transcribe(audio_path)
-                except Exception as e:  # noqa: BLE001 — log and continue with NaN.
-                    logger.exception("clip=%s model=%s transcribe failed", clip_id, model_id)
-                    text, latency = "", float("nan")
-
-                _append_prediction(
-                    out_csv,
-                    {
-                        "clip_id": clip_id,
-                        "model_id": model_id,
-                        "predicted_text": text,
-                        "latency_sec": latency,
-                        "decoder_variant": getattr(transcriber, "current_decoder", None) or "",
-                    },
-                    write_header=write_header,
-                )
-                write_header = False
-                already_done.add(clip_id)
-                logger.info(
-                    "  %s | clip=%s | latency=%.2fs | %s",
-                    model_id, clip_id, latency if latency == latency else float("nan"),
-                    (text[:60] + "…") if len(text) > 60 else text,
-                )
-        finally:
-            try:
-                transcriber.cleanup()
-            except Exception:  # noqa: BLE001
-                logger.exception("Cleanup failed for %s", model_id)
+    for spec in read_yaml(models_yaml)["models"]:
+        result = run_single_model(spec, manifest_csv, predictions_dir, device)
+        if result is not None:
+            failed.append(result)
 
     logger.info("Transcription complete. Failed models: %s", [f["model_id"] for f in failed])
     return failed
