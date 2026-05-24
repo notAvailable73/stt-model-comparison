@@ -20,7 +20,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 NOTEBOOKS_DIR = REPO_ROOT / "notebooks"
 
-GITHUB_REPO_URL = "https://github.com/Mainul/banglish-stt-benchmark.git"
+GITHUB_REPO_URL = "https://github.com/notAvailable73/stt-model-comparison.git"
 REPO_DIR = "/kaggle/working/banglish-stt-benchmark"
 
 
