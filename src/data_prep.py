@@ -102,9 +102,16 @@ def find_transcripts(root: Path) -> dict[str, str]:
     return merged
 
 
+AUDIO_EXTENSIONS = (".wav", ".flac", ".ogg", ".opus", ".mp3", ".m4a")
+
+
 def find_audio_files(root: Path) -> dict[str, Path]:
-    """Map utt_id (= filename stem) -> .wav path."""
-    return {p.stem: p for p in root.rglob("*.wav")}
+    """Map utt_id (= filename stem) -> audio path. Scans common formats."""
+    out: dict[str, Path] = {}
+    for p in root.rglob("*"):
+        if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS:
+            out.setdefault(p.stem, p)
+    return out
 
 
 # --- Per-clip features -------------------------------------------------------
