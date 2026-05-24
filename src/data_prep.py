@@ -102,16 +102,79 @@ def find_transcripts(root: Path) -> dict[str, str]:
     return merged
 
 
-AUDIO_EXTENSIONS = (".wav", ".flac", ".ogg", ".opus", ".mp3", ".m4a")
-
-
 def find_audio_files(root: Path) -> dict[str, Path]:
-    """Map utt_id (= filename stem) -> audio path. Scans common formats."""
-    out: dict[str, Path] = {}
-    for p in root.rglob("*"):
-        if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS:
-            out.setdefault(p.stem, p)
+    """Map recording_id (= filename stem) -> .wav path."""
+    return {p.stem: p for p in root.rglob("*.wav")}
+
+
+# --- Kaldi-style segments + wav.scp -----------------------------------------
+# OpenSLR-104 ships ~40 long lecture recordings plus a `segments` file that
+# slices each recording into ~4275 utterances by (start, end) timestamps.
+# So utt_id in `text` does NOT match a wav stem — it references a segment of
+# a parent recording. We parse segments + wav.scp, then extract per-utterance
+# sub-clips for the 50 sampled rows.
+
+def _parse_segments_file(path: Path) -> dict[str, tuple[str, float, float]]:
+    """Parse Kaldi `segments`: utt_id -> (recording_id, start_sec, end_sec)."""
+    out: dict[str, tuple[str, float, float]] = {}
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            parts = raw.split()
+            if len(parts) != 4:
+                continue
+            utt_id, rec_id, start, end = parts
+            try:
+                out[utt_id] = (rec_id, float(start), float(end))
+            except ValueError:
+                continue
     return out
+
+
+def find_segments(root: Path) -> dict[str, tuple[str, float, float]]:
+    merged: dict[str, tuple[str, float, float]] = {}
+    for path in root.rglob("segments"):
+        if path.is_file():
+            parsed = _parse_segments_file(path)
+            logger.info("Parsed %d segments from %s", len(parsed), path)
+            merged.update(parsed)
+    return merged
+
+
+def _parse_wav_scp(path: Path) -> dict[str, str]:
+    """Parse Kaldi `wav.scp`: recording_id -> wav path or filename token."""
+    out: dict[str, str] = {}
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            parts = raw.strip().split(None, 1)
+            if len(parts) == 2:
+                out[parts[0]] = parts[1].strip()
+    return out
+
+
+def find_wav_scp(root: Path) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for path in root.rglob("wav.scp"):
+        if path.is_file():
+            merged.update(_parse_wav_scp(path))
+    return merged
+
+
+def extract_segment(src_wav: Path, start_sec: float, end_sec: float, dest: Path) -> None:
+    """Slice [start, end] from src_wav and write a 16-bit PCM WAV to dest.
+
+    Idempotent: skips if dest already exists.
+    """
+    import soundfile as sf
+
+    if dest.exists():
+        return
+    info = sf.info(str(src_wav))
+    sr = info.samplerate
+    start_frame = max(0, int(start_sec * sr))
+    n_frames = max(1, int((end_sec - start_sec) * sr))
+    data, _ = sf.read(str(src_wav), start=start_frame, frames=n_frames, dtype="int16")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(dest), data, sr, subtype="PCM_16")
 
 
 # --- Per-clip features -------------------------------------------------------
@@ -232,6 +295,7 @@ def stratified_sample(
 def build_manifest(
     raw_dir: Path = Path("data/raw"),
     manifest_path: Path = Path("data/manifest.csv"),
+    clips_dir: Path = Path("data/clips"),
     n_samples: int = 50,
     seed: int = 42,
     archive_url: str = OPENSLR_URL,
@@ -239,6 +303,7 @@ def build_manifest(
     """Download + sample + write manifest. Idempotent: skips download/extract if present."""
     raw_dir = Path(raw_dir)
     manifest_path = Path(manifest_path)
+    clips_dir = Path(clips_dir)
 
     archive_path = raw_dir / "Bengali-English_test.tar.gz"
     if not archive_path.exists():
@@ -254,6 +319,8 @@ def build_manifest(
 
     transcripts = find_transcripts(raw_dir)
     audio_paths = find_audio_files(raw_dir)
+    segments = find_segments(raw_dir)
+    wav_scp = find_wav_scp(raw_dir)
     if not transcripts:
         raise RuntimeError(
             f"No transcripts found under {raw_dir}. Check archive layout — expected one of: "
@@ -261,28 +328,69 @@ def build_manifest(
         )
     if not audio_paths:
         raise RuntimeError(f"No .wav files found under {raw_dir}")
-    logger.info("Found %d transcripts and %d audio files", len(transcripts), len(audio_paths))
+    logger.info(
+        "Found %d transcripts, %d recordings, %d segments",
+        len(transcripts), len(audio_paths), len(segments),
+    )
+
+    def resolve_recording(rec_id: str) -> Path | None:
+        # Prefer wav.scp entry; fall back to stem lookup in audio_paths.
+        scp_entry = wav_scp.get(rec_id)
+        if scp_entry:
+            stem = Path(scp_entry).stem
+            if stem in audio_paths:
+                return audio_paths[stem]
+        return audio_paths.get(rec_id)
 
     records: list[dict] = []
-    for utt_id, text in transcripts.items():
-        wav = audio_paths.get(utt_id)
-        if wav is None:
-            continue
-        try:
-            length = audio_length_sec(wav)
-        except (RuntimeError, OSError) as e:
-            logger.warning("Skipping %s — couldn't read audio length: %s", wav, e)
-            continue
-        density = code_switch_density(text)
-        records.append({
-            "utt_id": utt_id,
-            "audio_path": str(wav.resolve()),
-            "reference_transcript": text,
-            "length_sec": round(length, 3),
-            "code_switch_density": round(density, 3),
-            "length_bucket": length_bucket(length),
-            "cs_bucket": cs_bucket(density),
-        })
+    if segments:
+        # Kaldi-style: each utt_id is a (recording_id, start, end) slice.
+        for utt_id, text in transcripts.items():
+            seg = segments.get(utt_id)
+            if seg is None:
+                continue
+            rec_id, start, end = seg
+            src = resolve_recording(rec_id)
+            if src is None:
+                continue
+            length = end - start
+            if length <= 0:
+                continue
+            density = code_switch_density(text)
+            records.append({
+                "utt_id": utt_id,
+                "_source_wav": str(src.resolve()),
+                "_start_sec": start,
+                "_end_sec": end,
+                "reference_transcript": text,
+                "length_sec": round(length, 3),
+                "code_switch_density": round(density, 3),
+                "length_bucket": length_bucket(length),
+                "cs_bucket": cs_bucket(density),
+            })
+    else:
+        # Fallback: utt_id matches a wav stem directly (non-Kaldi layout).
+        for utt_id, text in transcripts.items():
+            wav = audio_paths.get(utt_id)
+            if wav is None:
+                continue
+            try:
+                length = audio_length_sec(wav)
+            except (RuntimeError, OSError) as e:
+                logger.warning("Skipping %s — couldn't read audio length: %s", wav, e)
+                continue
+            density = code_switch_density(text)
+            records.append({
+                "utt_id": utt_id,
+                "_source_wav": str(wav.resolve()),
+                "_start_sec": 0.0,
+                "_end_sec": length,
+                "reference_transcript": text,
+                "length_sec": round(length, 3),
+                "code_switch_density": round(density, 3),
+                "length_bucket": length_bucket(length),
+                "cs_bucket": cs_bucket(density),
+            })
     logger.info("Matched %d (transcript, audio) pairs", len(records))
     if len(records) < n_samples:
         raise RuntimeError(
@@ -294,6 +402,13 @@ def build_manifest(
     selected = sorted(selected, key=lambda r: r["utt_id"])
     for i, r in enumerate(selected, start=1):
         r["clip_id"] = f"clip_{i:03d}"
+
+    # Extract sub-clips so downstream transcribers see one self-contained wav per row.
+    clips_dir.mkdir(parents=True, exist_ok=True)
+    for r in selected:
+        dest = clips_dir / f"{r['clip_id']}.wav"
+        extract_segment(Path(r["_source_wav"]), r["_start_sec"], r["_end_sec"], dest)
+        r["audio_path"] = str(dest.resolve())
 
     df = pd.DataFrame(selected, columns=MANIFEST_COLUMNS)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
