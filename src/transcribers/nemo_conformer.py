@@ -42,7 +42,7 @@ class NemoConformerTranscriber(BaseTranscriber):
         import nemo.collections.asr as nemo_asr
 
         logger.info("Loading NeMo model: %s", model_id)
-        self.asr = nemo_asr.models.ASRModel.from_pretrained(model_name=model_id)
+        self.asr = self._load_model(nemo_asr, model_id)
         use_cuda = device.startswith("cuda") and torch.cuda.is_available()
         target_device = "cuda" if use_cuda else "cpu"
         if device.startswith("cuda") and not use_cuda:
@@ -64,6 +64,29 @@ class NemoConformerTranscriber(BaseTranscriber):
         # Auto-switch bookkeeping (only meaningful when is_hybrid is True).
         self._auto_switch_done: bool = not self.is_hybrid
         self._rnnt_latencies: list[float] = []
+
+    @staticmethod
+    def _load_model(nemo_asr, model_id: str):
+        """Load via from_pretrained; fall back to restore_from on the raw .nemo file.
+
+        NeMo 1.23 + huggingface_hub leaves the downloaded .nemo tarball in the
+        cache dir but assumes the dir is already extracted, then fails with
+        FileNotFoundError on model_config.yaml. Workaround: pull the .nemo via
+        hf_hub_download and call restore_from directly.
+        """
+        try:
+            return nemo_asr.models.ASRModel.from_pretrained(model_name=model_id)
+        except FileNotFoundError as e:
+            if "model_config.yaml" not in str(e):
+                raise
+            from huggingface_hub import HfApi, hf_hub_download
+            files = HfApi().list_repo_files(model_id)
+            nemo_file = next((f for f in files if f.endswith(".nemo")), None)
+            if not nemo_file:
+                raise RuntimeError(f"No .nemo file found in {model_id}") from e
+            logger.info("Fallback: downloading %s and using restore_from", nemo_file)
+            local = hf_hub_download(repo_id=model_id, filename=nemo_file)
+            return nemo_asr.models.ASRModel.restore_from(restore_path=local)
 
     def _set_decoder(self, decoder_type: str) -> None:
         """Flip the hybrid model's active decoder. No-op for non-hybrid models."""
